@@ -12,17 +12,13 @@ const EXECUTION_TIMEOUT_MS = 2000;
 const MAX_CODE_BYTES = 100_000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 
-type RunStatus = "success" | "timeout" | "error";
-
 interface RunResult {
-  status: RunStatus;
-  stdout: string;
-  stderr: string;
+  success: boolean;
+  output: string;
+  error: string;
+  timeout: boolean;
   durationMs: number;
   exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  truncated: boolean;
-  timeoutMs: number;
 }
 
 function pythonBinary(): string {
@@ -30,12 +26,24 @@ function pythonBinary(): string {
   return process.platform === "win32" ? "python" : "python3";
 }
 
+function fail(message: string, status: number): NextResponse {
+  const body: RunResult = {
+    success: false,
+    output: "",
+    error: message,
+    timeout: false,
+    durationMs: 0,
+    exitCode: null,
+  };
+  return NextResponse.json(body, { status });
+}
+
 export async function POST(req: Request) {
   let payload: unknown;
   try {
     payload = await req.json();
   } catch {
-    return NextResponse.json({ error: "Body must be valid JSON." }, { status: 400 });
+    return fail("Request body must be valid JSON.", 400);
   }
 
   const code =
@@ -44,87 +52,81 @@ export async function POST(req: Request) {
       : undefined;
 
   if (typeof code !== "string") {
-    return NextResponse.json(
-      { error: 'Field "code" is required and must be a string.' },
-      { status: 400 },
-    );
+    return fail('Field "code" is required and must be a string.', 400);
   }
   if (Buffer.byteLength(code, "utf8") > MAX_CODE_BYTES) {
-    return NextResponse.json(
-      { error: `Code exceeds the ${MAX_CODE_BYTES}-byte limit.` },
-      { status: 413 },
-    );
+    return fail(`Code exceeds the ${MAX_CODE_BYTES}-byte limit.`, 413);
   }
 
   const workDir = await mkdtemp(join(tmpdir(), "coreloop-"));
   const sourcePath = join(workDir, "main.py");
-  await writeFile(sourcePath, code, "utf8");
 
   try {
+    await writeFile(sourcePath, code, "utf8");
     const result = await execute(sourcePath);
     return NextResponse.json(result);
+  } catch (err) {
+    return fail(
+      `Internal executor failure: ${(err as Error).message}`,
+      500,
+    );
   } finally {
-    await rm(workDir, { recursive: true, force: true }).catch(() => {});
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
 function execute(sourcePath: string): Promise<RunResult> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
-    const bin = pythonBinary();
-
-    const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      PYTHONIOENCODING: "utf-8",
-      PYTHONUNBUFFERED: "1",
-    };
 
     let child: ChildProcess;
     try {
-      child = spawn(bin, ["-I", "-B", sourcePath], {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: childEnv,
-        windowsHide: true,
-      });
+      child = spawn(
+        pythonBinary(),
+        ["-I", "-B", sourcePath],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          shell: false,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            PYTHONIOENCODING: "utf-8",
+            PYTHONUNBUFFERED: "1",
+          },
+        },
+      );
     } catch (err) {
       resolve({
-        status: "error",
-        stdout: "",
-        stderr: `Failed to launch Python (${bin}): ${(err as Error).message}`,
+        success: false,
+        output: "",
+        error: `Failed to launch Python: ${(err as Error).message}`,
+        timeout: false,
         durationMs: Date.now() - startedAt,
         exitCode: null,
-        signal: null,
-        truncated: false,
-        timeoutMs: EXECUTION_TIMEOUT_MS,
       });
       return;
     }
 
     let stdout = "";
     let stderr = "";
-    let truncated = false;
     let timedOut = false;
     let settled = false;
 
-    const append = (chunk: Buffer, target: "stdout" | "stderr") => {
-      const current = target === "stdout" ? stdout : stderr;
+    const capture = (chunk: Buffer, stream: "out" | "err") => {
+      const current = stream === "out" ? stdout : stderr;
       const remaining = MAX_OUTPUT_BYTES - current.length;
-      if (remaining <= 0) {
-        truncated = true;
-        return;
-      }
+      if (remaining <= 0) return;
       const text = chunk.toString("utf8");
       const next = text.length > remaining ? text.slice(0, remaining) : text;
-      if (text.length > remaining) truncated = true;
-      if (target === "stdout") stdout += next;
+      if (stream === "out") stdout += next;
       else stderr += next;
     };
 
     (child.stdout as Readable).on("data", (chunk: Buffer) =>
-      append(chunk, "stdout"),
+      capture(chunk, "out"),
     );
     (child.stderr as Readable).on("data", (chunk: Buffer) =>
-      append(chunk, "stderr"),
+      capture(chunk, "err"),
     );
 
     const killTimer = setTimeout(() => {
@@ -132,7 +134,7 @@ function execute(sourcePath: string): Promise<RunResult> {
       try {
         child.kill("SIGKILL");
       } catch {
-        // ignore
+        // ignore — process already exited.
       }
     }, EXECUTION_TIMEOUT_MS);
 
@@ -145,42 +147,46 @@ function execute(sourcePath: string): Promise<RunResult> {
 
     child.on("error", (err: Error) => {
       finish({
-        status: "error",
-        stdout,
-        stderr: stderr + (stderr ? "\n" : "") + `[runtime] ${err.message}`,
+        success: false,
+        output: stdout,
+        error: appendLine(stderr, `[executor] ${err.message}`),
+        timeout: false,
         durationMs: Date.now() - startedAt,
         exitCode: null,
-        signal: null,
-        truncated,
-        timeoutMs: EXECUTION_TIMEOUT_MS,
       });
     });
 
-    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+    child.on("close", (code: number | null) => {
       const durationMs = Date.now() - startedAt;
+
       if (timedOut) {
         finish({
-          status: "timeout",
-          stdout,
-          stderr,
+          success: false,
+          output: stdout,
+          error: appendLine(
+            stderr,
+            `[executor] Process killed after ${EXECUTION_TIMEOUT_MS} ms timeout.`,
+          ),
+          timeout: true,
           durationMs,
           exitCode: code,
-          signal,
-          truncated,
-          timeoutMs: EXECUTION_TIMEOUT_MS,
         });
         return;
       }
+
       finish({
-        status: code === 0 ? "success" : "error",
-        stdout,
-        stderr,
+        success: code === 0,
+        output: stdout,
+        error: stderr,
+        timeout: false,
         durationMs,
         exitCode: code,
-        signal,
-        truncated,
-        timeoutMs: EXECUTION_TIMEOUT_MS,
       });
     });
   });
+}
+
+function appendLine(existing: string, line: string): string {
+  if (!existing) return line;
+  return existing.endsWith("\n") ? existing + line : existing + "\n" + line;
 }

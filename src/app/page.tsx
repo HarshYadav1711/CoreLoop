@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CodeEditor } from "@/components/editor";
 import { Controls } from "@/components/controls";
 import { OutputPanel, type UiStatus } from "@/components/output-panel";
-import { runCode, type RunResponse } from "@/lib/run-code";
+import { runCode, type RunResult } from "@/lib/run-code";
 
 const SAMPLE_HELLO = `print("Hello Empower")\n`;
 
@@ -15,11 +15,16 @@ while True:
 
 const DEFAULT_CODE = SAMPLE_HELLO;
 
+function deriveStatus(result: RunResult): "success" | "timeout" | "error" {
+  if (result.timeout) return "timeout";
+  if (result.success) return "success";
+  return "error";
+}
+
 export default function Home() {
   const [code, setCode] = useState(DEFAULT_CODE);
   const [status, setStatus] = useState<UiStatus>("idle");
-  const [response, setResponse] = useState<RunResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [response, setResponse] = useState<RunResult | null>(null);
   const runRef = useRef<() => void>(() => {});
   const isRunningRef = useRef(false);
 
@@ -28,15 +33,9 @@ export default function Home() {
     isRunningRef.current = true;
     setStatus("running");
     setResponse(null);
-    setError(null);
     const result = await runCode(code);
-    if (result.ok) {
-      setResponse(result.data);
-      setStatus(result.data.status);
-    } else {
-      setError(result.error);
-      setStatus("error");
-    }
+    setResponse(result);
+    setStatus(deriveStatus(result));
     isRunningRef.current = false;
   }, [code]);
 
@@ -45,7 +44,6 @@ export default function Home() {
     setCode(next);
     setStatus("idle");
     setResponse(null);
-    setError(null);
   }, []);
 
   useEffect(() => {
@@ -93,7 +91,7 @@ export default function Home() {
           </div>
         </div>
 
-        <OutputPanel status={status} response={response} error={error} />
+        <OutputPanel status={status} response={response} />
       </section>
     </main>
   );
@@ -104,7 +102,7 @@ function StatusDot({
   response,
 }: {
   status: UiStatus;
-  response: RunResponse | null;
+  response: RunResult | null;
 }) {
   const map: Record<UiStatus, { label: string; color: string }> = {
     idle: { label: "Idle", color: "bg-[--border]" },

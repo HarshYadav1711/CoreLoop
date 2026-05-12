@@ -1,16 +1,15 @@
 "use client";
 
-import type { RunResponse, RunStatus } from "@/lib/run-code";
+import type { RunResult } from "@/lib/run-code";
 
-export type UiStatus = "idle" | "running" | RunStatus;
+export type UiStatus = "idle" | "running" | "success" | "timeout" | "error";
 
 interface OutputPanelProps {
   status: UiStatus;
-  response: RunResponse | null;
-  error: string | null;
+  response: RunResult | null;
 }
 
-export function OutputPanel({ status, response, error }: OutputPanelProps) {
+export function OutputPanel({ status, response }: OutputPanelProps) {
   return (
     <div className="flex h-full min-h-[280px] flex-col bg-[--background]">
       <div className="flex items-center justify-between border-b border-[--border] bg-[--surface] px-3 py-1.5 text-xs">
@@ -22,47 +21,44 @@ export function OutputPanel({ status, response, error }: OutputPanelProps) {
       </div>
 
       <div className="flex-1 overflow-auto bg-[#0b0f14] px-4 py-3 text-[13px] leading-relaxed text-slate-100 dark:bg-black">
-        {status === "idle" && !response && !error && <IdleState />}
+        {status === "idle" && !response && <IdleState />}
         {status === "running" && <LoadingState />}
-        {error && <StateBanner title="Request failed" tone="danger">{error}</StateBanner>}
-        {response?.status === "success" && (
+
+        {response && response.success && !response.timeout && (
           <StateBanner title="Execution complete" tone="success">
-            Finished in {formatMs(response.durationMs)} with exit code 0.
+            Finished in {formatMs(response.durationMs)} with exit code{" "}
+            {response.exitCode ?? 0}.
           </StateBanner>
         )}
-        {response?.status === "error" && (
+        {response && response.timeout && (
+          <StateBanner title="Timed out" tone="warning">
+            Execution exceeded 2000 ms and was terminated.
+          </StateBanner>
+        )}
+        {response && !response.success && !response.timeout && (
           <StateBanner title="Runtime error" tone="danger">
             Python exited with code {response.exitCode ?? "unknown"}.
           </StateBanner>
         )}
-        {response?.status === "timeout" && (
-          <StateBanner title="Timed out" tone="warning">
-            Execution exceeded {response.timeoutMs} ms and was terminated.
-          </StateBanner>
-        )}
-        {response && response.stdout && (
+
+        {response && response.output && (
           <StreamBlock label="stdout" tone="success">
-            {response.stdout}
+            {response.output}
           </StreamBlock>
         )}
-        {response && response.stderr && (
+        {response && response.error && (
           <StreamBlock label="stderr" tone="danger">
-            {response.stderr}
+            {response.error}
           </StreamBlock>
         )}
         {response &&
-          response.status === "success" &&
-          !response.stdout &&
-          !response.stderr && (
+          response.success &&
+          !response.output &&
+          !response.error && (
             <p className="text-slate-400">
               Program exited successfully with no output.
             </p>
           )}
-        {response?.truncated && (
-          <p className="mt-3 text-xs text-slate-400">
-            Output truncated at 256 KB.
-          </p>
-        )}
       </div>
     </div>
   );
@@ -72,8 +68,8 @@ function IdleState() {
   return (
     <p className="text-slate-400">
       Press <Kbd>Cmd/Ctrl</Kbd> + <Kbd>Enter</Kbd> or click{" "}
-      <span className="font-medium text-slate-100">Run</span> to execute on
-      the server.
+      <span className="font-medium text-slate-100">Run</span> to execute on the
+      server.
     </p>
   );
 }
@@ -143,7 +139,9 @@ function StatusLabel({ status }: { status: UiStatus }) {
           ? "text-[--danger]"
           : "text-[--muted]";
   return (
-    <span className={`hidden rounded border border-[--border] px-1.5 py-0.5 text-[11px] sm:inline ${tone}`}>
+    <span
+      className={`hidden rounded border border-[--border] px-1.5 py-0.5 text-[11px] sm:inline ${tone}`}
+    >
       {status}
     </span>
   );
@@ -154,18 +152,14 @@ function Meta({
   response,
 }: {
   status: UiStatus;
-  response: RunResponse | null;
+  response: RunResult | null;
 }) {
   if (status === "running") {
     return <span className="text-[--muted]">running...</span>;
   }
   if (!response) return <span className="text-[--muted]">idle</span>;
   const exit =
-    response.exitCode !== null
-      ? `exit ${response.exitCode}`
-      : response.signal
-        ? `signal ${response.signal}`
-        : "no exit";
+    response.exitCode !== null ? `exit ${response.exitCode}` : "no exit";
   return (
     <span className="text-[--muted]">
       {exit} · {formatMs(response.durationMs)}

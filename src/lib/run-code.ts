@@ -1,26 +1,18 @@
-export type RunStatus = "success" | "timeout" | "error";
-
-export interface RunResponse {
-  status: RunStatus;
-  stdout: string;
-  stderr: string;
+export interface RunResult {
+  success: boolean;
+  output: string;
+  error: string;
+  timeout: boolean;
   durationMs: number;
   exitCode: number | null;
-  signal: string | null;
-  truncated: boolean;
-  timeoutMs: number;
 }
-
-export type RunOutcome =
-  | { ok: true; data: RunResponse }
-  | { ok: false; error: string };
 
 const ENDPOINT = "/api/run";
 
 export async function runCode(
   code: string,
   signal?: AbortSignal,
-): Promise<RunOutcome> {
+): Promise<RunResult> {
   try {
     const res = await fetch(ENDPOINT, {
       method: "POST",
@@ -28,21 +20,36 @@ export async function runCode(
       body: JSON.stringify({ code }),
       signal,
     });
-    const payload: unknown = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const message =
-        typeof payload === "object" &&
-        payload !== null &&
-        "error" in payload &&
-        typeof (payload as { error: unknown }).error === "string"
-          ? (payload as { error: string }).error
-          : `HTTP ${res.status}`;
-      return { ok: false, error: message };
-    }
-    return { ok: true, data: payload as RunResponse };
+    const data: unknown = await res.json().catch(() => null);
+    if (isRunResult(data)) return data;
+    return localFailure(`Malformed response (HTTP ${res.status}).`);
   } catch (err) {
     const e = err as Error;
-    if (e.name === "AbortError") return { ok: false, error: "Request cancelled." };
-    return { ok: false, error: e.message };
+    if (e.name === "AbortError") return localFailure("Request cancelled.");
+    return localFailure(e.message || "Network request failed.");
   }
+}
+
+function isRunResult(value: unknown): value is RunResult {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.success === "boolean" &&
+    typeof v.output === "string" &&
+    typeof v.error === "string" &&
+    typeof v.timeout === "boolean" &&
+    typeof v.durationMs === "number" &&
+    (typeof v.exitCode === "number" || v.exitCode === null)
+  );
+}
+
+function localFailure(message: string): RunResult {
+  return {
+    success: false,
+    output: "",
+    error: message,
+    timeout: false,
+    durationMs: 0,
+    exitCode: null,
+  };
 }
