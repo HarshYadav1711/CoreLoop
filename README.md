@@ -30,7 +30,7 @@ There is no account, no database, no third-party service. The entire product sur
 
 ## Tech stack
 
-- Next.js 16 (App Router, standalone output)
+- Next.js 16 (App Router)
 - React 19
 - TypeScript 5
 - Tailwind CSS 4
