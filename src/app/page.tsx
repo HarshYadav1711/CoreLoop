@@ -21,9 +21,11 @@ export default function Home() {
   const [response, setResponse] = useState<RunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const runRef = useRef<() => void>(() => {});
+  const isRunningRef = useRef(false);
 
   const handleRun = useCallback(async () => {
-    if (status === "running") return;
+    if (isRunningRef.current) return;
+    isRunningRef.current = true;
     setStatus("running");
     setResponse(null);
     setError(null);
@@ -35,7 +37,16 @@ export default function Home() {
       setError(result.error);
       setStatus("error");
     }
-  }, [code, status]);
+    isRunningRef.current = false;
+  }, [code]);
+
+  const replaceSample = useCallback((next: string) => {
+    if (isRunningRef.current) return;
+    setCode(next);
+    setStatus("idle");
+    setResponse(null);
+    setError(null);
+  }, []);
 
   useEffect(() => {
     runRef.current = handleRun;
@@ -53,7 +64,7 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="flex min-h-screen flex-col">
+    <main className="flex min-h-screen flex-col bg-[--background]">
       <header className="flex h-12 items-center justify-between border-b border-[--border] bg-[--background] px-4 sm:px-6">
         <div className="flex items-baseline gap-3">
           <span className="text-sm font-semibold tracking-tight">CoreLoop</span>
@@ -64,13 +75,13 @@ export default function Home() {
         <StatusDot status={status} response={response} />
       </header>
 
-      <section className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-[--border] lg:grid-cols-2">
+      <section className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-[--border] lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
         <div className="flex min-h-[360px] flex-col bg-[--background]">
           <Controls
             onRun={() => runRef.current()}
-            onReset={() => setCode(DEFAULT_CODE)}
-            onLoadSuccess={() => setCode(SAMPLE_HELLO)}
-            onLoadTimeout={() => setCode(SAMPLE_TIMEOUT)}
+            onReset={() => replaceSample(DEFAULT_CODE)}
+            onLoadSuccess={() => replaceSample(SAMPLE_HELLO)}
+            onLoadTimeout={() => replaceSample(SAMPLE_TIMEOUT)}
             isRunning={status === "running"}
           />
           <div className="min-h-0 flex-1">

@@ -20,14 +20,26 @@ export function Controls({
       <span className="text-[--muted] font-mono">main.py</span>
 
       <div className="flex items-center gap-1">
-        <GhostButton onClick={onLoadSuccess} title="Insert the hello-world demo">
+        <GhostButton
+          onClick={onLoadSuccess}
+          title="Insert the success preset"
+          disabled={isRunning}
+        >
           Hello
         </GhostButton>
-        <GhostButton onClick={onLoadTimeout} title="Insert the timeout demo">
+        <GhostButton
+          onClick={onLoadTimeout}
+          title="Insert the timeout preset"
+          disabled={isRunning}
+        >
           Timeout
         </GhostButton>
         <Divider />
-        <GhostButton onClick={onReset} title="Reset to the default sample">
+        <GhostButton
+          onClick={onReset}
+          title="Reset to the default sample"
+          disabled={isRunning}
+        >
           Reset
         </GhostButton>
         <Divider />
@@ -40,10 +52,12 @@ export function Controls({
 function GhostButton({
   onClick,
   title,
+  disabled = false,
   children,
 }: {
   onClick: () => void;
   title?: string;
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -51,7 +65,8 @@ function GhostButton({
       type="button"
       onClick={onClick}
       title={title}
-      className="rounded px-2 py-1 text-[--muted] transition hover:bg-[--border]/60 hover:text-[--foreground]"
+      disabled={disabled}
+      className="rounded px-2 py-1 text-[--muted] transition hover:bg-[--border]/60 hover:text-[--foreground] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-[--muted]"
     >
       {children}
     </button>
