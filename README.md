@@ -2,50 +2,82 @@
 
 Write Python in the browser. Run it on a real server. Get the output back.
 
-CoreLoop is a single-page web app built around one tight loop: edit, run,
-inspect. The editor is Monaco (the engine behind VS Code). The runtime is
-plain CPython, invoked from a Next.js API route, with a hard wall-clock
-timeout and bounded output capture. Nothing is mocked.
+CoreLoop is a single-page web app built around one tight feedback loop: edit, run, inspect. The editor is Monaco. The runtime is CPython, invoked from a Next.js API route with a hard wall-clock cap and bounded output capture. Nothing is mocked; every Run is a real subprocess on the server.
 
-> Live demo: _to be filled in once deployed_ — see [Deployment](#deployment).
+> Live demo: _to be added once deployed_
 
----
+## Status
 
-## What it does
+CoreLoop is a focused execution prototype. It is built to validate one workflow — submit code, run it server-side, return structured output — and nothing else. The execution path is production-shaped (real subprocess, real timeout, real cleanup), but stronger sandboxing is required before exposing an instance to untrusted users on the public internet. See [Security considerations](#security-considerations).
 
-- Submits the editor buffer to `POST /api/run`.
-- The server writes the code to a private temporary file, spawns CPython with
-  isolated flags (`python -I -B`), and streams `stdout` / `stderr`.
-- A 2,000 ms timer kills the process group with `SIGKILL` if it overruns.
-- The response always includes `status`, `stdout`, `stderr`, `durationMs`,
-  `exitCode`, `signal`, and a `truncated` flag (output capped at 256 KB).
-- The temp directory is removed on every request, even on failure.
+## Product overview
 
-That is the whole product surface. There is no auth, no database, no account
-system, and no third-party paid API.
+A user lands on a single page with a Python editor and a console. They press Run (or `Cmd/Ctrl + Enter`). The browser POSTs the code to `/api/run`. The server writes it to a unique temporary file, spawns CPython, and returns a JSON result containing stdout, stderr, a success flag, a timeout flag, and timing data. The console renders the result with distinct states for success, runtime error, timeout, and request failure.
 
-## Required demo cases
+There is no account, no database, no third-party service. The entire product surface is the editor, the Run button, and the console.
 
-| Input                       | Expected status | Expected output                  |
-| --------------------------- | --------------- | -------------------------------- |
-| `print("Hello Empower")`    | `success`       | `Hello Empower` in `stdout`      |
-| `while True: pass`          | `timeout`       | Killed at 2 s, server stays up   |
+## Key features
 
-Both ship as one-click examples in the editor toolbar (`Hello`, `Timeout`).
+- Browser-based Python editor powered by Monaco.
+- Real server-side execution via CPython, no in-browser interpreter.
+- Hard 2-second wall-clock timeout enforced with SIGKILL.
+- Single response shape covers success, runtime error, timeout, and request failure; the UI distinguishes all four.
+- Output capped at 256 KB per stream so a hostile program cannot exhaust server memory.
+- Unique per-request temp directory, removed in `finally`, even on crash.
+- Cross-platform: works with `python3` on Linux/macOS and `python` on Windows; binary is overridable via `PYTHON_BIN`.
+- Concurrent requests are independent; one user's timeout does not affect another's run.
+- Stateless API; the server is free to be replaced or scaled horizontally.
 
----
+## Tech stack
 
-## Local run
+- Next.js 16 (App Router, standalone output)
+- React 19
+- TypeScript 5
+- Tailwind CSS 4
+- Monaco Editor (`@monaco-editor/react`)
+- Node.js 22 server runtime
+- CPython 3.10+ for execution
+
+No third-party services, no paid APIs, no telemetry SDKs.
+
+## Architecture summary
+
+Three layers, no shared state:
+
+1. **Client.** A single Next.js page renders the Monaco editor, a small control row (Run, Reset, two presets), and an output console. State is local React; nothing is persisted.
+2. **API route.** `POST /api/run` validates the body (string `code`, 100 KB byte cap), creates a unique temp directory with `mkdtemp`, writes the code to `main.py`, and hands the path to the executor.
+3. **Executor.** `child_process.spawn("python", ["-I", "-B", main.py], { shell: false })`. A 2,000 ms timer kills the process with SIGKILL on overrun. stdout and stderr are captured up to 256 KB per stream. The temp directory is removed in `finally`.
+
+The response shape is the same on success and failure:
+
+```json
+{
+  "success":    boolean,
+  "output":     "stdout as a string",
+  "error":      "stderr or executor message",
+  "timeout":    boolean,
+  "durationMs": 118,
+  "exitCode":   0
+}
+```
+
+Validation failures (malformed JSON, missing `code`, oversized payload) return the same shape with `success: false` and the appropriate HTTP status (400 or 413). This means clients can decode one schema and never branch on whether the failure was server-side or input-side.
+
+Notable execution-path choices:
+
+- `spawn` with `shell: false`. No shell process is involved; the code path is never composed into a shell command, so shell-injection is structurally impossible.
+- `python -I -B`. Isolated mode skips `site` and ignores `PYTHON*` environment variables; `-B` disables `.pyc` writes so the working directory stays clean.
+- The `timeout: true` flag is the canonical signal for a 2-second termination. The `error` field carries Python's own stderr (usually empty for an infinite loop), not an injected executor marker.
+
+## Local setup
 
 Requirements:
 
-- Node.js **20+** (tested on 22)
-- Python **3.10+** on `PATH`
-  - The server uses `python3` on Linux/macOS and `python` on Windows. Override
-    with the `PYTHON_BIN` environment variable if needed.
+- Node.js 20 or newer (tested on 22).
+- Python 3.10 or newer on `PATH`. The server uses `python3` on Linux/macOS and `python` on Windows. Override with `PYTHON_BIN` if needed.
 
 ```bash
-git clone <this-repo-url> coreloop
+git clone <repo-url> coreloop
 cd coreloop
 npm install
 npm run dev
@@ -59,7 +91,22 @@ npm run build
 npm run start
 ```
 
-### Manual API check
+Docker (optional, includes baseline runtime hardening):
+
+```bash
+docker build -t coreloop .
+docker run --rm -p 3000:3000 \
+  --read-only --tmpfs /tmp:rw,size=64m,mode=1777 \
+  --memory=512m --cpus=1 --pids-limit=128 \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  coreloop
+```
+
+The flags above are intentional: the only writable surface is a 64 MB tmpfs at `/tmp`, the container runs as a non-root user with no Linux capabilities, and CPU/memory/PID limits contain runaway programs. Network egress is not blocked here; locking it down belongs at the orchestrator layer.
+
+## Example runs
+
+**Hello Empower.** Normal stdout, success in well under the timeout.
 
 ```bash
 curl -s http://localhost:3000/api/run \
@@ -67,191 +114,106 @@ curl -s http://localhost:3000/api/run \
   -d '{"code":"print(\"Hello Empower\")"}'
 ```
 
+```json
+{
+  "success": true,
+  "output": "Hello Empower\n",
+  "error": "",
+  "timeout": false,
+  "durationMs": 118,
+  "exitCode": 0
+}
+```
+
+**Infinite loop.** SIGKILL fires at the 2-second mark. The server stays available for the next request.
+
 ```bash
 curl -s http://localhost:3000/api/run \
   -H 'content-type: application/json' \
   -d '{"code":"while True: pass"}'
 ```
 
-The second request returns within ~2 s with `"status":"timeout"` and the
-server keeps serving subsequent requests.
+```json
+{
+  "success": false,
+  "output": "",
+  "error": "",
+  "timeout": true,
+  "durationMs": 2026,
+  "exitCode": null
+}
+```
 
----
-
-## Run with Docker (optional)
-
-A multi-stage `Dockerfile` ships with the project. The runtime image is
-`node:22-bookworm-slim` plus `python3` and `tini`, running as a non-root
-user. It is the smallest setup that keeps signal handling and zombie reaping
-correct when CoreLoop kills runaway Python processes.
+**Python runtime error.** Non-zero exit with stderr captured.
 
 ```bash
-docker build -t coreloop .
-docker run --rm -p 3000:3000 \
-  --read-only \
-  --tmpfs /tmp:rw,size=64m,mode=1777 \
-  --memory=512m --cpus=1 \
-  --pids-limit=128 \
-  --cap-drop=ALL --security-opt=no-new-privileges \
-  coreloop
+curl -s http://localhost:3000/api/run \
+  -H 'content-type: application/json' \
+  -d '{"code":"raise RuntimeError(\"boom\")"}'
 ```
 
-The flags above are deliberate — they harden the container without changing
-how the app behaves:
-
-- `--read-only` + `--tmpfs /tmp` — the only writable surface is the temp
-  directory where user code lives, bounded to 64 MB.
-- `--memory`, `--cpus`, `--pids-limit` — first line of defence against fork
-  bombs and memory exhaustion.
-- `--cap-drop=ALL`, `--security-opt=no-new-privileges` — strip Linux
-  capabilities that user code has no business touching.
-
-Network egress is **not** blocked here; see [Security](#security-risks-still-present).
-
----
-
-## Deployment
-
-The repo is deploy-ready, but no live URL is published yet.
-
-- **Vercel** is _not_ recommended for this app. Serverless functions on Vercel
-  do not include a Python runtime alongside the Node runtime, and they have
-  stricter execution-time and process-spawn limits than this design assumes.
-- **Recommended targets** for a working live demo:
-  - Fly.io / Railway / Render — point them at the included `Dockerfile`.
-  - A small VM (any cloud) running `docker run` with the hardening flags
-    above.
-
-Once deployed, replace the placeholder under the title with the live URL.
-
----
-
-## Architecture (today)
-
-```
-Browser (Next.js page, Monaco editor)
-        │
-        │  POST /api/run  { code }
-        ▼
-Next.js API route (Node runtime)
-        │
-        │  spawn("python3", ["-I", "-B", main.py])
-        │  + 2 s SIGKILL timer
-        │  + output capture (cap 256 KB)
-        ▼
-CPython subprocess on the same host
+```json
+{
+  "success": false,
+  "output": "",
+  "error": "Traceback (most recent call last):\n  File \"/tmp/coreloop-xxxx/main.py\", line 1, in <module>\n    raise RuntimeError(\"boom\")\nRuntimeError: boom\n",
+  "timeout": false,
+  "durationMs": 102,
+  "exitCode": 1
+}
 ```
 
-Key files:
+## Security considerations
 
-- `src/app/page.tsx` — single-page UI, Monaco editor, output pane, status pill.
-- `src/app/api/run/route.ts` — Python invocation, timeout, output capture.
-- `Dockerfile` — production image (Node + Python + tini, non-root).
-- `next.config.ts` — `output: "standalone"` so the Docker image stays small.
+CoreLoop is not a public sandbox. Treat any deployment as a trust-required surface until the mitigations below are in place.
 
----
+Live risks in the current implementation:
 
-## Security risks still present
+1. **No process isolation.** Submitted code runs as the server process user with read access to whatever the Node process can read and unrestricted outbound network access. A user can read source on disk, hit internal services, or call cloud-metadata endpoints.
+2. **Bounded time, unbounded everything else.** The 2-second timer caps wall clock. It does not cap memory, file descriptors, threads, or child processes. Allocations like `" " * 10**10` can OOM the host before the timer fires.
+3. **Standard library is fully available.** `python -I -B` skips site-packages and ignores user env vars, but `socket`, `subprocess`, `os`, and `ctypes` are all importable. The language is not restricted; nothing in CoreLoop pretends otherwise.
+4. **No authentication or rate limiting.** Anyone who can reach the page can submit jobs. A trivial fetch loop will saturate the host.
+5. **One CPython interpreter per request.** Each request pays 50-150 ms of interpreter cold start. Concurrency is bounded only by host capacity, not by the application.
+6. **Output capture is in-memory.** The 256 KB cap protects against unbounded output, but a program that produces output just below the cap on every request still costs memory under load.
 
-CoreLoop is a prototype. Treat the input as **trusted code** — do not expose
-this instance to the open internet without the mitigations described in the
-next section. The current implementation has the following live risks:
+The included Docker hardening (`--read-only`, tmpfs scratch, dropped capabilities, memory/CPU/PID caps, non-root user) is enough to make local exploration safer. It is not enough for public exposure.
 
-1. **No sandbox isolation.** Submitted Python runs as the server process user
-   with full filesystem read access to whatever the Node process can see and
-   full outbound network access. A user can read source files, hit internal
-   services, exfiltrate data, or call cloud-metadata endpoints.
-2. **Resource exhaustion beyond wall-clock.** The 2-second timer bounds time
-   but not memory, file descriptors, threads, or child processes. A program
-   like `x = " " * 10**10` or a fork bomb can degrade or OOM the host before
-   the timer fires. The Docker flags above contain this, but the bare
-   `npm run start` path does not.
-3. **Disk pressure.** Each request writes a small file to the OS temp dir.
-   Cleanup is best-effort; if the Node process is killed mid-request, the
-   temp directory leaks until the OS reaps it.
-4. **No rate limiting or authentication.** Anyone who can reach the page can
-   submit arbitrary jobs. A trivial loop of `fetch('/api/run', …)` will pin
-   the server.
-5. **Subprocess-spawn DoS.** Each request spawns a fresh `python` interpreter.
-   That is ~50–150 ms of cold start and a non-trivial RSS footprint per
-   request. Concurrency is bounded only by the host.
-6. **Stdin and import surface.** `python -I -B` disables site-packages and the
-   user's environment, but the standard library is fully available — that
-   includes `socket`, `subprocess`, `os`, and `ctypes`. None of these are
-   blocked at the language level.
-7. **Output capture is in-memory.** The 256 KB cap prevents unbounded growth,
-   but a program that produces output _just_ under the cap on every request
-   still costs memory under load.
+To make CoreLoop safe to expose to the open internet, the execution path needs:
 
-A production deployment must add: an OS-level sandbox (gVisor, nsjail,
-Firecracker microVM, or a per-request throwaway container), egress network
-policy (default deny), cgroup-enforced CPU/RAM/PID limits, per-IP rate
-limiting, and authenticated access if appropriate.
+- An OS-level sandbox per request: gVisor, nsjail, or a Firecracker microVM. Docker alone is not sufficient.
+- Default-deny network egress with a tight allowlist, enforced at the sandbox boundary, not in user code.
+- Cgroup-enforced limits on memory, file descriptors, and PIDs.
+- Per-IP and per-session rate limiting at the edge, returning `429` with `Retry-After`.
+- Authenticated access if the audience is not fully trusted.
 
-## How the architecture would change for 500 simultaneous users
+## Production scaling considerations
 
-The current design is a single Node process spawning one CPython per request
-on the same host. That works for a demo and falls over somewhere around a few
-dozen concurrent runs. A 500-concurrent-user target — meaning ~500 execution
-requests in flight at any moment, not just 500 page views — would change
-shape on five axes:
+The current design is a single Node process spawning one CPython per request on the same host. That shape is correct for a focused prototype and falls over somewhere around a few dozen concurrent runs. For 500 simultaneous users — meaning 500 in-flight execution requests, not 500 page views — the system needs to be reshaped across five axes.
 
-1. **Separate the web tier from the execution tier.**
-   The Next.js app becomes a stateless front end behind a CDN. The static
-   page, Monaco assets, and React bundle are cached at the edge — no server
-   work for renders. The API route stops spawning Python directly; it pushes
-   a job onto a queue (Redis Streams, NATS JetStream, or SQS) and waits on
-   the result. This decouples surge-tolerance from execution capacity.
+1. **Split the web tier from the execution tier.** The Next.js app becomes a stateless front end behind a CDN. Monaco, the React bundle, and the page itself cache at the edge. The API stops running Python in-process; it pushes a job onto a queue (Redis Streams, NATS JetStream, or SQS) and waits on the result. Surge tolerance and execution capacity scale independently.
 
-2. **A dedicated execution worker pool.**
-   Python no longer runs on the web host. A horizontally scaled set of
-   execution workers (Kubernetes Deployment, ECS service, Fly Machines,
-   Nomad job — the orchestrator is not the point) pulls jobs and runs each
-   one in an isolated sandbox. With a 2 s wall-clock cap and assuming ~3 s
-   wall budget per request including queue + spawn, 500 concurrent users is
-   ~500 in-flight sandboxes. Sized at ~10–20 sandboxes per worker node
-   (limited by RAM and PID count rather than CPU), that's ~25–50 worker
-   nodes at peak, with autoscaling driven by queue depth, not CPU.
+2. **A dedicated execution worker pool.** Python runs on a horizontally scaled set of execution workers, not on the web host. With a 2-second cap and roughly a 3-second wall budget per request including queue and spawn, 500 concurrent users translates to about 500 in-flight sandboxes. At 10 to 20 sandboxes per worker (limited by RAM and PID count rather than CPU), peak capacity is 25 to 50 worker nodes, autoscaled on queue depth rather than CPU.
 
-3. **Sandbox per request, with warm pools.**
-   Each job runs in a throwaway gVisor or Firecracker sandbox — not a fresh
-   Docker container per request (too slow). Pre-warmed sandboxes are taken
-   from a pool, the user code is fed in, the sandbox is reset or discarded.
-   Cold start drops from hundreds of milliseconds to single-digit
-   milliseconds. The sandbox enforces: no network egress except an allowlist,
-   read-only root filesystem, tmpfs-only writable scratch, strict
-   memory/CPU/PID cgroups, dropped capabilities, seccomp filter.
+3. **Sandbox per request, with warm pools.** Each job runs in a throwaway gVisor or Firecracker sandbox, not a fresh Docker container per request. Pre-warmed sandboxes are taken from a pool, the user code is fed in, the sandbox is reset or discarded. Cold start drops from hundreds of milliseconds to single-digit milliseconds. The sandbox enforces no network egress (or a tight allowlist), a read-only root filesystem, tmpfs-only writable scratch, cgroup limits on memory and PIDs, dropped capabilities, and a seccomp filter.
 
-4. **Backpressure and fairness, not just scale.**
-   Bounded queue depth with a published SLO ("if we can't run your job in N
-   seconds we reject it") beats letting the queue grow unbounded. Per-IP
-   and per-session token buckets stop a single client from starving everyone
-   else. The API returns `429` with a `Retry-After` instead of silently
-   queueing for 30 s.
+4. **Backpressure and fairness, not just scale.** Bounded queue depth with a published SLO beats unbounded queueing. Per-IP and per-session token buckets prevent a single client from starving the others. The API returns `429` with a `Retry-After` rather than silently queueing for tens of seconds.
 
-5. **Observability built into the contract.**
-   Every job gets a trace ID returned to the client and propagated through
-   queue → worker → sandbox. Structured logs (one line per job: id, bytes,
-   duration, exit, status), per-route latency histograms (p50/p95/p99), and
-   queue-depth / worker-saturation metrics are the inputs to the autoscaler.
-   Without these, "it's slow" is unactionable at 500 concurrent users.
+5. **Observability built into the contract.** Every job carries a trace ID through queue, worker, and sandbox. Structured logs (one line per job: id, bytes, duration, exit, status), per-route latency histograms (p50/p95/p99), and queue-depth and worker-saturation metrics drive the autoscaler. Without these, "it is slow" is unactionable at this concurrency.
 
-The data plane stays simple — the request body is still `{ code }` and the
-response is still `{ status, stdout, stderr, durationMs }`. What changes is
-where the Python actually runs and how the system absorbs load without the
-single Node process being the bottleneck.
+The request and response contract does not change. `POST /api/run` still takes `{ code }` and returns the same JSON shape. Only the runtime topology beneath it changes.
 
----
+## Future improvements
 
-## Tech
+Roughly in priority order.
 
-- Next.js 16 (App Router, standalone output)
-- React 19
-- TypeScript 5
-- Tailwind CSS 4
-- Monaco Editor (`@monaco-editor/react`)
-- Node.js 22 runtime, CPython 3.10+ for execution
-- No third-party services, no paid APIs
+- Replace the host subprocess with a per-request gVisor or Firecracker sandbox, default-deny egress, and cgroup-enforced resource limits.
+- Per-IP rate limiting and request-size accounting at the edge.
+- Stream stdout and stderr to the client over Server-Sent Events so long-running programs show output before they finish.
+- Warm interpreter pool with a reset protocol to cut cold-start cost to single-digit milliseconds.
+- Cancel-in-flight from the UI; today the only way to stop a slow run is to wait for the timeout.
+- Snippet sharing via signed URLs, with the code carried in the URL fragment so the server stays stateless.
+- Structured server logs and OpenTelemetry traces, exported to whatever the host environment uses.
+- Optional language packs (Node, Ruby, Go) once the sandboxing primitive is in place; the contract is already language-agnostic.
 
 ## License
 
