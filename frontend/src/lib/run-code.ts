@@ -7,10 +7,11 @@ export interface RunResult {
   exitCode: number | null;
 }
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+const API_URL = (
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
+).replace(/\/$/, "");
 
-const ENDPOINT = `${API_BASE_URL.replace(/\/$/, "")}/api/run`;
+const ENDPOINT = `${API_URL}/api/run`;
 
 export async function runCode(
   code: string,

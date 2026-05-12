@@ -44,7 +44,7 @@ No third-party services, no paid APIs, no telemetry SDKs.
 
 Three layers, no shared state:
 
-1. **Client.** `/frontend` is a single Next.js app for Vercel. It renders the Monaco editor, a small control row (Run, Reset, two presets), and an output console. State is local React; nothing is persisted. The API base URL comes from `NEXT_PUBLIC_API_BASE_URL`.
+1. **Client.** `/frontend` is a single Next.js app for Vercel. It renders the Monaco editor, a small control row (Run, Reset, two presets), and an output console. State is local React; nothing is persisted. The API base URL comes from `NEXT_PUBLIC_API_URL`.
 2. **Execution API.** `/backend` is a small Express server for Render. `POST /api/run` validates the body (string `code`, 100 KB byte cap), creates a unique temp directory with `mkdtemp`, writes the code to `main.py`, and hands the path to the executor.
 3. **Executor.** By default, CoreLoop uses `child_process.spawn("python", ["-I", "-B", main.py], { shell: false })` on the host. An optional Docker executor is available through `CORELOOP_EXECUTOR=docker`; it runs the same temp file in a short-lived `python:3.13-slim` container with no network, a read-only root filesystem, tmpfs scratch space, and basic CPU, memory, and PID limits. In both modes, a 2,000 ms timer kills the run on overrun. stdout and stderr are captured up to 256 KB per stream. The temp directory is removed in `finally`.
 
@@ -94,14 +94,14 @@ npm run dev --prefix backend
 Run the frontend in a second terminal:
 
 ```bash
-NEXT_PUBLIC_API_BASE_URL=http://localhost:3001 npm run dev --prefix frontend
+NEXT_PUBLIC_API_URL=http://localhost:3001 npm run dev --prefix frontend
 # http://localhost:3000
 ```
 
 PowerShell:
 
 ```powershell
-$env:NEXT_PUBLIC_API_BASE_URL = "http://localhost:3001"
+$env:NEXT_PUBLIC_API_URL = "http://localhost:3001"
 npm run dev --prefix frontend
 ```
 
@@ -133,7 +133,8 @@ Create a Vercel project pointed at `/frontend`.
 - Framework preset: Next.js
 - Build command: `npm run build`
 - Output directory: `.next`
-- Environment variable: `NEXT_PUBLIC_API_BASE_URL=<your Render backend URL>`
+- Environment variable: `NEXT_PUBLIC_API_URL=<your Render backend URL>`
+- See `frontend/.env.local.example` for a local example. Copy it to `frontend/.env.local` for development.
 
 The frontend contains no server execution logic. It only calls `POST /api/run` on the configured backend URL.
 
