@@ -1,0 +1,17 @@
+# Render Blueprint for the CoreLoop backend.
+# Apply via https://dashboard.render.com -> New + -> Blueprint and point it at this repo.
+# The frontend is hosted on Vercel and is not part of this blueprint.
+services:
+  - type: web
+    name: coreloop-backend
+    runtime: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    buildFilter:
+      paths:
+        - backend/**
+    envVars:
+      - key: CORS_ORIGIN
+        sync: false
