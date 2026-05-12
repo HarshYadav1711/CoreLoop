@@ -2,7 +2,7 @@
 
 Write Python in the browser. Run it on a real server. Get the output back.
 
-CoreLoop is a single-page web app built around one tight feedback loop: edit, run, inspect. The editor is Monaco. The runtime is CPython, invoked from a Next.js API route with a hard wall-clock cap and bounded output capture. Nothing is mocked; every Run is a real subprocess on the server.
+CoreLoop is a single-page web app built around one tight feedback loop: edit, run, inspect. The editor is Monaco. The runtime is CPython, invoked from a dedicated Express execution API with a hard wall-clock cap and bounded output capture. Nothing is mocked; every Run is a real subprocess on the server.
 
 > Live demo: _to be added once deployed_
 
@@ -44,8 +44,8 @@ No third-party services, no paid APIs, no telemetry SDKs.
 
 Three layers, no shared state:
 
-1. **Client.** A single Next.js page renders the Monaco editor, a small control row (Run, Reset, two presets), and an output console. State is local React; nothing is persisted.
-2. **API route.** `POST /api/run` validates the body (string `code`, 100 KB byte cap), creates a unique temp directory with `mkdtemp`, writes the code to `main.py`, and hands the path to the executor.
+1. **Client.** `/frontend` is a single Next.js app for Vercel. It renders the Monaco editor, a small control row (Run, Reset, two presets), and an output console. State is local React; nothing is persisted. The API base URL comes from `NEXT_PUBLIC_API_BASE_URL`.
+2. **Execution API.** `/backend` is a small Express server for Render. `POST /api/run` validates the body (string `code`, 100 KB byte cap), creates a unique temp directory with `mkdtemp`, writes the code to `main.py`, and hands the path to the executor.
 3. **Executor.** By default, CoreLoop uses `child_process.spawn("python", ["-I", "-B", main.py], { shell: false })` on the host. An optional Docker executor is available through `CORELOOP_EXECUTOR=docker`; it runs the same temp file in a short-lived `python:3.13-slim` container with no network, a read-only root filesystem, tmpfs scratch space, and basic CPU, memory, and PID limits. In both modes, a 2,000 ms timer kills the run on overrun. stdout and stderr are captured up to 256 KB per stream. The temp directory is removed in `finally`.
 
 The response shape is the same on success and failure:
@@ -75,28 +75,41 @@ Notable execution-path choices:
 Requirements:
 
 - Node.js 20 or newer (tested on 22).
-- Python 3.10 or newer on `PATH`. The server uses `python3` on Linux/macOS and `python` on Windows. Override with `PYTHON_BIN` if needed.
+- Python 3.10 or newer on `PATH` for the backend. The server uses `python3` on Linux/macOS and `python` on Windows. Override with `PYTHON_BIN` if needed.
 
 ```bash
 git clone <repo-url> coreloop
 cd coreloop
-npm install
-npm run dev
-# open http://localhost:3000
+npm install --prefix backend
+npm install --prefix frontend
 ```
 
-Production build:
+Run the backend:
 
 ```bash
-npm run build
-npm run start
+npm run dev --prefix backend
+# http://localhost:4000
+```
+
+Run the frontend in a second terminal:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://localhost:4000 npm run dev --prefix frontend
+# http://localhost:3000
+```
+
+PowerShell:
+
+```powershell
+$env:NEXT_PUBLIC_API_BASE_URL = "http://localhost:4000"
+npm run dev --prefix frontend
 ```
 
 Optional Docker execution mode:
 
 ```bash
 docker pull python:3.13-slim
-CORELOOP_EXECUTOR=docker npm run dev
+CORELOOP_EXECUTOR=docker npm run dev --prefix backend
 ```
 
 PowerShell:
@@ -104,32 +117,58 @@ PowerShell:
 ```powershell
 docker pull python:3.13-slim
 $env:CORELOOP_EXECUTOR = "docker"
-npm run dev
+npm run dev --prefix backend
 ```
 
 This keeps the main app unchanged and only swaps the execution backend. Each run starts a disposable container with `--network none`, `--read-only`, tmpfs `/tmp`, dropped capabilities, and small CPU, memory, and PID limits. The image is never pulled during a request (`--pull=never`), so local behavior stays predictable; pull it once before enabling the mode.
 
 Docker execution requires a running Docker daemon. If Docker is not installed or Docker Desktop is stopped, leave `CORELOOP_EXECUTOR` unset and CoreLoop will use the default host Python executor.
 
-Docker app image:
+## Deployment
+
+### Frontend on Vercel
+
+Create a Vercel project pointed at `/frontend`.
+
+- Framework preset: Next.js
+- Build command: `npm run build`
+- Output directory: `.next`
+- Environment variable: `NEXT_PUBLIC_API_BASE_URL=<your Render backend URL>`
+
+The frontend contains no server execution logic. It only calls `POST /api/run` on the configured backend URL.
+
+### Backend on Render
+
+Create a Render Web Service pointed at `/backend`. Use the included backend Dockerfile so Python is available in production.
+
+- Runtime: Docker
+- Dockerfile path: `backend/Dockerfile` if the repo root is selected, or `Dockerfile` if `/backend` is selected as the root directory.
+- Health check path: `/health`
+- Environment variables:
+  - `CORS_ORIGIN=<your Vercel frontend URL>`
+  - `PYTHON_BIN=python3` (optional; this is already the default on Linux)
+
+Do not set `CORELOOP_EXECUTOR=docker` on Render. The backend container already includes Python; launching Docker from inside the Render container would require Docker-in-Docker and is intentionally not part of this deployment path.
+
+Backend Docker image:
 
 ```bash
-docker build -t coreloop .
-docker run --rm -p 3000:3000 \
+docker build -t coreloop-backend ./backend
+docker run --rm -p 4000:4000 \
   --read-only --tmpfs /tmp:rw,size=64m,mode=1777 \
   --memory=512m --cpus=1 --pids-limit=128 \
   --cap-drop=ALL --security-opt=no-new-privileges \
-  coreloop
+  coreloop-backend
 ```
 
-The app image packages Next.js and Python into one container for deployment. It does not enable the optional Docker executor by default, because running Docker from inside Docker requires mounting the host Docker socket and complicates the local story. Keep Docker execution as a host-local opt-in unless you intentionally manage that tradeoff.
+The backend image packages Express and Python into one container. It does not enable the optional Docker executor by default, because running Docker from inside Docker requires mounting the host Docker socket and complicates the deployment model.
 
 ## Example runs
 
 **Hello Empower.** Normal stdout, success in well under the timeout.
 
 ```bash
-curl -s http://localhost:3000/api/run \
+curl -s http://localhost:4000/api/run \
   -H 'content-type: application/json' \
   -d '{"code":"print(\"Hello Empower\")"}'
 ```
@@ -148,7 +187,7 @@ curl -s http://localhost:3000/api/run \
 **Infinite loop.** SIGKILL fires at the 2-second mark. The server stays available for the next request.
 
 ```bash
-curl -s http://localhost:3000/api/run \
+curl -s http://localhost:4000/api/run \
   -H 'content-type: application/json' \
   -d '{"code":"while True: pass"}'
 ```
@@ -167,7 +206,7 @@ curl -s http://localhost:3000/api/run \
 **Python runtime error.** Non-zero exit with stderr captured.
 
 ```bash
-curl -s http://localhost:3000/api/run \
+curl -s http://localhost:4000/api/run \
   -H 'content-type: application/json' \
   -d '{"code":"raise RuntimeError(\"boom\")"}'
 ```
@@ -208,7 +247,7 @@ To make CoreLoop safe to expose to the open internet, the execution path needs:
 
 ## Production scaling considerations
 
-The current design is a single Node process spawning one CPython per request on the same host. That shape is correct for a focused prototype and falls over somewhere around a few dozen concurrent runs. For 500 simultaneous users — meaning 500 in-flight execution requests, not 500 page views — the system needs to be reshaped across five axes.
+The current backend design is a single Express process spawning one CPython per request on the same host. That shape is correct for a focused prototype and falls over somewhere around a few dozen concurrent runs. For 500 simultaneous users — meaning 500 in-flight execution requests, not 500 page views — the system needs to be reshaped across five axes.
 
 1. **Split the web tier from the execution tier.** The Next.js app becomes a stateless front end behind a CDN. Monaco, the React bundle, and the page itself cache at the edge. The API stops running Python in-process; it pushes a job onto a queue (Redis Streams, NATS JetStream, or SQS) and waits on the result. Surge tolerance and execution capacity scale independently.
 
