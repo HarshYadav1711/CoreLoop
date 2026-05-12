@@ -46,7 +46,7 @@ Three layers, no shared state:
 
 1. **Client.** A single Next.js page renders the Monaco editor, a small control row (Run, Reset, two presets), and an output console. State is local React; nothing is persisted.
 2. **API route.** `POST /api/run` validates the body (string `code`, 100 KB byte cap), creates a unique temp directory with `mkdtemp`, writes the code to `main.py`, and hands the path to the executor.
-3. **Executor.** `child_process.spawn("python", ["-I", "-B", main.py], { shell: false })`. A 2,000 ms timer kills the process with SIGKILL on overrun. stdout and stderr are captured up to 256 KB per stream. The temp directory is removed in `finally`.
+3. **Executor.** By default, CoreLoop uses `child_process.spawn("python", ["-I", "-B", main.py], { shell: false })` on the host. An optional Docker executor is available through `CORELOOP_EXECUTOR=docker`; it runs the same temp file in a short-lived `python:3.13-slim` container with no network, a read-only root filesystem, tmpfs scratch space, and basic CPU, memory, and PID limits. In both modes, a 2,000 ms timer kills the run on overrun. stdout and stderr are captured up to 256 KB per stream. The temp directory is removed in `finally`.
 
 The response shape is the same on success and failure:
 
@@ -67,6 +67,7 @@ Notable execution-path choices:
 
 - `spawn` with `shell: false`. No shell process is involved; the code path is never composed into a shell command, so shell-injection is structurally impossible.
 - `python -I -B`. Isolated mode skips `site` and ignores `PYTHON*` environment variables; `-B` disables `.pyc` writes so the working directory stays clean.
+- `CORELOOP_EXECUTOR=docker` is opt-in. It improves local isolation without changing the API contract, but it is still a basic container boundary rather than a full public sandbox.
 - The `timeout: true` flag is the canonical signal for a 2-second termination. The `error` field carries Python's own stderr (usually empty for an infinite loop), not an injected executor marker.
 
 ## Local setup
@@ -91,7 +92,26 @@ npm run build
 npm run start
 ```
 
-Docker (optional, includes baseline runtime hardening):
+Optional Docker execution mode:
+
+```bash
+docker pull python:3.13-slim
+CORELOOP_EXECUTOR=docker npm run dev
+```
+
+PowerShell:
+
+```powershell
+docker pull python:3.13-slim
+$env:CORELOOP_EXECUTOR = "docker"
+npm run dev
+```
+
+This keeps the main app unchanged and only swaps the execution backend. Each run starts a disposable container with `--network none`, `--read-only`, tmpfs `/tmp`, dropped capabilities, and small CPU, memory, and PID limits. The image is never pulled during a request (`--pull=never`), so local behavior stays predictable; pull it once before enabling the mode.
+
+Docker execution requires a running Docker daemon. If Docker is not installed or Docker Desktop is stopped, leave `CORELOOP_EXECUTOR` unset and CoreLoop will use the default host Python executor.
+
+Docker app image:
 
 ```bash
 docker build -t coreloop .
@@ -102,7 +122,7 @@ docker run --rm -p 3000:3000 \
   coreloop
 ```
 
-The flags above are intentional: the only writable surface is a 64 MB tmpfs at `/tmp`, the container runs as a non-root user with no Linux capabilities, and CPU/memory/PID limits contain runaway programs. Network egress is not blocked here; locking it down belongs at the orchestrator layer.
+The app image packages Next.js and Python into one container for deployment. It does not enable the optional Docker executor by default, because running Docker from inside Docker requires mounting the host Docker socket and complicates the local story. Keep Docker execution as a host-local opt-in unless you intentionally manage that tradeoff.
 
 ## Example runs
 
@@ -176,7 +196,7 @@ Live risks in the current implementation:
 5. **One CPython interpreter per request.** Each request pays 50-150 ms of interpreter cold start. Concurrency is bounded only by host capacity, not by the application.
 6. **Output capture is in-memory.** The 256 KB cap protects against unbounded output, but a program that produces output just below the cap on every request still costs memory under load.
 
-The included Docker hardening (`--read-only`, tmpfs scratch, dropped capabilities, memory/CPU/PID caps, non-root user) is enough to make local exploration safer. It is not enough for public exposure.
+The optional Docker executor (`CORELOOP_EXECUTOR=docker`) is enough to make local exploration safer: it removes network access, uses a read-only root filesystem, limits memory/CPU/PIDs, and runs code as an unprivileged user inside a short-lived container. It is still not enough for public exposure.
 
 To make CoreLoop safe to expose to the open internet, the execution path needs:
 

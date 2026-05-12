@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ export const dynamic = "force-dynamic";
 const EXECUTION_TIMEOUT_MS = 2000;
 const MAX_CODE_BYTES = 100_000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
+const DOCKER_IMAGE = process.env.CORELOOP_DOCKER_IMAGE ?? "python:3.13-slim";
 
 interface RunResult {
   success: boolean;
@@ -24,6 +26,10 @@ interface RunResult {
 function pythonBinary(): string {
   if (process.env.PYTHON_BIN) return process.env.PYTHON_BIN;
   return process.platform === "win32" ? "python" : "python3";
+}
+
+function isDockerExecutor(): boolean {
+  return process.env.CORELOOP_EXECUTOR === "docker";
 }
 
 function fail(message: string, status: number): NextResponse {
@@ -63,7 +69,7 @@ export async function POST(req: Request) {
 
   try {
     await writeFile(sourcePath, code, "utf8");
-    const result = await execute(sourcePath);
+    const result = await execute(workDir, sourcePath);
     return NextResponse.json(result);
   } catch (err) {
     return fail(
@@ -75,31 +81,103 @@ export async function POST(req: Request) {
   }
 }
 
-function execute(sourcePath: string): Promise<RunResult> {
+interface ProcessSpec {
+  command: string;
+  args: string[];
+  env?: NodeJS.ProcessEnv;
+  cleanup?: () => void;
+}
+
+function hostPythonSpec(sourcePath: string): ProcessSpec {
+  return {
+    command: pythonBinary(),
+    args: ["-I", "-B", sourcePath],
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUNBUFFERED: "1",
+    },
+  };
+}
+
+function dockerPythonSpec(workDir: string): ProcessSpec {
+  const containerName = `coreloop-${randomUUID()}`;
+  return {
+    command: "docker",
+    args: [
+      "run",
+      "--rm",
+      "--pull=never",
+      "--name",
+      containerName,
+      "--network",
+      "none",
+      "--read-only",
+      "--tmpfs",
+      "/tmp:rw,size=16m,mode=1777",
+      "--memory",
+      "128m",
+      "--cpus",
+      "0.5",
+      "--pids-limit",
+      "64",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--user",
+      "65534:65534",
+      "--workdir",
+      "/work",
+      "--mount",
+      `type=bind,src=${workDir},dst=/work,readonly`,
+      "-e",
+      "PYTHONIOENCODING=utf-8",
+      "-e",
+      "PYTHONUNBUFFERED=1",
+      DOCKER_IMAGE,
+      "python",
+      "-I",
+      "-B",
+      "/work/main.py",
+    ],
+    cleanup: () => {
+      const killer = spawn("docker", ["rm", "-f", containerName], {
+        stdio: "ignore",
+        shell: false,
+        windowsHide: true,
+      });
+      killer.unref();
+    },
+  };
+}
+
+function executionSpec(workDir: string, sourcePath: string): ProcessSpec {
+  return isDockerExecutor()
+    ? dockerPythonSpec(workDir)
+    : hostPythonSpec(sourcePath);
+}
+
+function execute(workDir: string, sourcePath: string): Promise<RunResult> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
+    const dockerMode = isDockerExecutor();
+    const spec = executionSpec(workDir, sourcePath);
+    const executorName = dockerMode ? "Docker executor" : "Python";
 
     let child: ChildProcess;
     try {
-      child = spawn(
-        pythonBinary(),
-        ["-I", "-B", sourcePath],
-        {
-          stdio: ["ignore", "pipe", "pipe"],
-          shell: false,
-          windowsHide: true,
-          env: {
-            ...process.env,
-            PYTHONIOENCODING: "utf-8",
-            PYTHONUNBUFFERED: "1",
-          },
-        },
-      );
+      child = spawn(spec.command, spec.args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+        windowsHide: true,
+        env: spec.env,
+      });
     } catch (err) {
       resolve({
         success: false,
         output: "",
-        error: `Failed to launch Python: ${(err as Error).message}`,
+        error: `Failed to launch ${executorName}: ${(err as Error).message}`,
         timeout: false,
         durationMs: Date.now() - startedAt,
         exitCode: null,
@@ -133,6 +211,7 @@ function execute(sourcePath: string): Promise<RunResult> {
       timedOut = true;
       try {
         child.kill("SIGKILL");
+        spec.cleanup?.();
       } catch {
         // ignore — process already exited.
       }
@@ -149,7 +228,7 @@ function execute(sourcePath: string): Promise<RunResult> {
       finish({
         success: false,
         output: stdout,
-        error: stderr || `Failed to launch Python: ${err.message}`,
+        error: stderr || `Failed to launch ${executorName}: ${err.message}`,
         timeout: false,
         durationMs: Date.now() - startedAt,
         exitCode: null,
