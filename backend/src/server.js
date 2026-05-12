@@ -2,17 +2,23 @@ import express from "express";
 import { failure, MAX_CODE_BYTES, runPython } from "./executor.js";
 
 const app = express();
-const port = Number(process.env.PORT ?? 4000);
-const allowedOrigin = process.env.CORS_ORIGIN ?? "*";
+const port = Number(process.env.PORT || 3001);
+const allowedOrigins = parseAllowedOrigins(process.env.CORS_ORIGIN);
+
+app.disable("x-powered-by");
 
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
-  res.setHeader("Vary", "Origin");
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
-    res.sendStatus(204);
+    res.sendStatus(origin && !isAllowedOrigin(origin) ? 403 : 204);
     return;
   }
 
@@ -21,8 +27,8 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "1mb" }));
 
-app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+app.get("/", (_req, res) => {
+  res.json({ ok: true, service: "coreloop-backend" });
 });
 
 app.post("/api/run", async (req, res) => {
@@ -44,6 +50,10 @@ app.post("/api/run", async (req, res) => {
   res.json(result);
 });
 
+app.use((_req, res) => {
+  res.status(404).json(failure("Route not found."));
+});
+
 app.use((err, _req, res, _next) => {
   if (err instanceof SyntaxError) {
     res.status(400).json(failure("Request body must be valid JSON."));
@@ -61,3 +71,20 @@ app.use((err, _req, res, _next) => {
 app.listen(port, () => {
   console.log(`CoreLoop backend listening on http://localhost:${port}`);
 });
+
+function parseAllowedOrigins(value) {
+  if (!value) {
+    return new Set(["http://localhost:3000", "http://127.0.0.1:3000"]);
+  }
+
+  return new Set(
+    value
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  );
+}
+
+function isAllowedOrigin(origin) {
+  return allowedOrigins.has("*") || allowedOrigins.has(origin);
+}

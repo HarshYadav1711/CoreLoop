@@ -19,7 +19,7 @@ RUN npm ci --omit=dev --no-audit --no-fund
 COPY --chown=coreloop:coreloop src ./src
 
 USER coreloop
-EXPOSE 4000
+EXPOSE 3001
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "src/server.js"]

@@ -88,20 +88,20 @@ Run the backend:
 
 ```bash
 npm run dev --prefix backend
-# http://localhost:4000
+# http://localhost:3001
 ```
 
 Run the frontend in a second terminal:
 
 ```bash
-NEXT_PUBLIC_API_BASE_URL=http://localhost:4000 npm run dev --prefix frontend
+NEXT_PUBLIC_API_BASE_URL=http://localhost:3001 npm run dev --prefix frontend
 # http://localhost:3000
 ```
 
 PowerShell:
 
 ```powershell
-$env:NEXT_PUBLIC_API_BASE_URL = "http://localhost:4000"
+$env:NEXT_PUBLIC_API_BASE_URL = "http://localhost:3001"
 npm run dev --prefix frontend
 ```
 
@@ -143,7 +143,7 @@ Create a Render Web Service pointed at `/backend`. Use the included backend Dock
 
 - Runtime: Docker
 - Dockerfile path: `backend/Dockerfile` if the repo root is selected, or `Dockerfile` if `/backend` is selected as the root directory.
-- Health check path: `/health`
+- Health check path: `/`
 - Environment variables:
   - `CORS_ORIGIN=<your Vercel frontend URL>`
   - `PYTHON_BIN=python3` (optional; this is already the default on Linux)
@@ -154,7 +154,7 @@ Backend Docker image:
 
 ```bash
 docker build -t coreloop-backend ./backend
-docker run --rm -p 4000:4000 \
+docker run --rm -p 3001:3001 \
   --read-only --tmpfs /tmp:rw,size=64m,mode=1777 \
   --memory=512m --cpus=1 --pids-limit=128 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -168,7 +168,7 @@ The backend image packages Express and Python into one container. It does not en
 **Hello Empower.** Normal stdout, success in well under the timeout.
 
 ```bash
-curl -s http://localhost:4000/api/run \
+curl -s http://localhost:3001/api/run \
   -H 'content-type: application/json' \
   -d '{"code":"print(\"Hello Empower\")"}'
 ```
@@ -187,7 +187,7 @@ curl -s http://localhost:4000/api/run \
 **Infinite loop.** SIGKILL fires at the 2-second mark. The server stays available for the next request.
 
 ```bash
-curl -s http://localhost:4000/api/run \
+curl -s http://localhost:3001/api/run \
   -H 'content-type: application/json' \
   -d '{"code":"while True: pass"}'
 ```
@@ -206,7 +206,7 @@ curl -s http://localhost:4000/api/run \
 **Python runtime error.** Non-zero exit with stderr captured.
 
 ```bash
-curl -s http://localhost:4000/api/run \
+curl -s http://localhost:3001/api/run \
   -H 'content-type: application/json' \
   -d '{"code":"raise RuntimeError(\"boom\")"}'
 ```
