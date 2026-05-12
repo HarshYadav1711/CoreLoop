@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CodeEditor } from "@/components/editor";
 import { Controls } from "@/components/controls";
 import { OutputPanel, type UiStatus } from "@/components/output-panel";
+import { StatusDot } from "@/components/status-dot";
 import { runCode, type RunResult } from "@/lib/run-code";
 
 const SAMPLE_HELLO = `print("Hello Empower")\n`;
 
-const SAMPLE_TIMEOUT = `# The server kills this after 2 seconds.
+const SAMPLE_TIMEOUT = `# CoreLoop kills any program that runs longer than 2 seconds.
 while True:
     pass
 `;
@@ -33,10 +34,13 @@ export default function Home() {
     isRunningRef.current = true;
     setStatus("running");
     setResponse(null);
-    const result = await runCode(code);
-    setResponse(result);
-    setStatus(deriveStatus(result));
-    isRunningRef.current = false;
+    try {
+      const result = await runCode(code);
+      setResponse(result);
+      setStatus(deriveStatus(result));
+    } finally {
+      isRunningRef.current = false;
+    }
   }, [code]);
 
   const replaceSample = useCallback((next: string) => {
@@ -67,7 +71,7 @@ export default function Home() {
         <div className="flex items-baseline gap-3">
           <span className="text-sm font-semibold tracking-tight">CoreLoop</span>
           <span className="hidden text-xs text-[--muted] sm:inline">
-            Run Python on the server · 2 s hard limit
+            Run Python on the server
           </span>
         </div>
         <StatusDot status={status} response={response} />
@@ -95,37 +99,4 @@ export default function Home() {
       </section>
     </main>
   );
-}
-
-function StatusDot({
-  status,
-  response,
-}: {
-  status: UiStatus;
-  response: RunResult | null;
-}) {
-  const map: Record<UiStatus, { label: string; color: string }> = {
-    idle: { label: "Idle", color: "bg-[--border]" },
-    running: { label: "Running", color: "bg-[--muted]" },
-    success: { label: "Success", color: "bg-[--success]" },
-    timeout: { label: "Timeout", color: "bg-[--warning]" },
-    error: { label: "Error", color: "bg-[--danger]" },
-  };
-  const c = map[status];
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className={`inline-block h-2 w-2 rounded-full ${c.color}`} />
-      <span className="text-[--muted]">
-        {c.label}
-        {response && status !== "idle" && status !== "running" && (
-          <span className="ml-1.5">· {formatMs(response.durationMs)}</span>
-        )}
-      </span>
-    </div>
-  );
-}
-
-function formatMs(ms: number) {
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
 }

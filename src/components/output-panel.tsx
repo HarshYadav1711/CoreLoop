@@ -1,8 +1,12 @@
 "use client";
 
+import { formatMs } from "@/lib/format";
 import type { RunResult } from "@/lib/run-code";
 
 export type UiStatus = "idle" | "running" | "success" | "timeout" | "error";
+
+const TIMEOUT_LIMIT_MS = 2000;
+const OUTPUT_LIMIT_LABEL = "256 KB";
 
 interface OutputPanelProps {
   status: UiStatus;
@@ -10,102 +14,136 @@ interface OutputPanelProps {
 }
 
 export function OutputPanel({ status, response }: OutputPanelProps) {
+  const verdict = response ? classifyResult(response) : null;
+
   return (
     <div className="flex h-full min-h-[280px] flex-col bg-[--background]">
-      <div className="flex items-center justify-between border-b border-[--border] bg-[--surface] px-3 py-1.5 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="text-[--muted] font-mono">console</span>
-          <StatusLabel status={status} />
-        </div>
-        <Meta status={status} response={response} />
-      </div>
+      <ConsoleHeader status={status} response={response} />
 
       <div className="flex-1 overflow-auto bg-[#0b0f14] px-4 py-3 text-[13px] leading-relaxed text-slate-100 dark:bg-black">
-        {status === "idle" && !response && <IdleState />}
-        {status === "running" && <LoadingState />}
+        {status === "idle" && !response && <EmptyState />}
+        {status === "running" && <RunningState />}
 
-        {response && response.success && !response.timeout && (
-          <StateBanner title="Execution complete" tone="success">
-            Finished in {formatMs(response.durationMs)} with exit code{" "}
-            {response.exitCode ?? 0}.
-          </StateBanner>
+        {verdict === "timeout" && response && (
+          <Banner tone="warning" title="Timed out">
+            CoreLoop terminated the program after {formatMs(response.durationMs)}.
+            Every run has a hard 2-second limit.
+          </Banner>
         )}
-        {response && response.timeout && (
-          <StateBanner title="Timed out" tone="warning">
-            Execution exceeded 2000 ms and was terminated.
-          </StateBanner>
+        {verdict === "python-error" && response && (
+          <Banner tone="danger" title="Python exited with an error">
+            Process exited with code {response.exitCode}. See stderr below.
+          </Banner>
         )}
-        {response && !response.success && !response.timeout && (
-          <StateBanner title="Runtime error" tone="danger">
-            Python exited with code {response.exitCode ?? "unknown"}.
-          </StateBanner>
+        {verdict === "could-not-run" && response && (
+          <Banner tone="danger" title="Could not run the program">
+            {response.error || "The request failed before Python started."}
+          </Banner>
         )}
 
-        {response && response.output && (
-          <StreamBlock label="stdout" tone="success">
+        {response?.output && (
+          <Stream label="stdout" tone="success">
             {response.output}
-          </StreamBlock>
+          </Stream>
         )}
-        {response && response.error && (
-          <StreamBlock label="stderr" tone="danger">
+        {verdict === "python-error" && response?.error && (
+          <Stream label="stderr" tone="danger">
             {response.error}
-          </StreamBlock>
+          </Stream>
         )}
-        {response &&
-          response.success &&
-          !response.output &&
-          !response.error && (
-            <p className="text-slate-400">
-              Program exited successfully with no output.
-            </p>
-          )}
+
+        {verdict === "success" && response && !response.output && (
+          <p className="text-slate-400">
+            Program exited cleanly with no output.
+          </p>
+        )}
       </div>
+
+      <LimitsFooter />
     </div>
   );
 }
 
-function IdleState() {
+function ConsoleHeader({
+  status,
+  response,
+}: {
+  status: UiStatus;
+  response: RunResult | null;
+}) {
   return (
-    <p className="text-slate-400">
-      Press <Kbd>Cmd/Ctrl</Kbd> + <Kbd>Enter</Kbd> or click{" "}
-      <span className="font-medium text-slate-100">Run</span> to execute on the
-      server.
-    </p>
+    <div className="flex items-center justify-between border-b border-[--border] bg-[--surface] px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-[--muted]">console</span>
+        <StatusChip status={status} />
+      </div>
+      <Meta status={status} response={response} />
+    </div>
   );
 }
 
-function LoadingState() {
+function LimitsFooter() {
+  return (
+    <div className="border-t border-[--border] bg-[--surface] px-3 py-1.5 text-[11px] text-[--muted]">
+      Runtime: Python · Timeout: {formatMs(TIMEOUT_LIMIT_MS)} · Output limit:{" "}
+      {OUTPUT_LIMIT_LABEL}
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="space-y-1 text-slate-400">
+      <p>
+        Press <Kbd>Cmd/Ctrl</Kbd> + <Kbd>Enter</Kbd> to run, or click{" "}
+        <span className="font-medium text-slate-100">Run</span>.
+      </p>
+      <p className="text-slate-500">
+        Stdout, stderr, and timing will appear here.
+      </p>
+    </div>
+  );
+}
+
+function RunningState() {
   return (
     <div className="flex items-center gap-2 text-slate-400">
       <Spinner />
-      <span>Executing on server...</span>
+      <span>Executing on the server…</span>
     </div>
   );
 }
 
-function StateBanner({
+type Verdict = "success" | "timeout" | "python-error" | "could-not-run";
+
+function classifyResult(r: RunResult): Verdict {
+  if (r.success) return "success";
+  if (r.timeout) return "timeout";
+  if (r.exitCode !== null) return "python-error";
+  return "could-not-run";
+}
+
+function Banner({
   title,
   tone,
   children,
 }: {
   title: string;
-  tone: "success" | "warning" | "danger";
+  tone: "warning" | "danger";
   children: React.ReactNode;
 }) {
   const toneClass =
-    tone === "success"
-      ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
-      : tone === "warning"
-        ? "border-amber-500/20 bg-amber-500/10 text-amber-200"
-        : "border-red-500/20 bg-red-500/10 text-red-200";
+    tone === "warning"
+      ? "border-amber-500/20 bg-amber-500/10 text-amber-200"
+      : "border-red-500/20 bg-red-500/10 text-red-200";
   return (
     <div className={`mb-3 rounded-md border px-3 py-2 text-xs ${toneClass}`}>
-      <span className="font-medium">{title}:</span> {children}
+      <span className="font-medium">{title}.</span> {children}
     </div>
   );
 }
 
-function StreamBlock({
+function Stream({
   label,
   tone,
   children,
@@ -129,7 +167,7 @@ function StreamBlock({
   );
 }
 
-function StatusLabel({ status }: { status: UiStatus }) {
+function StatusChip({ status }: { status: UiStatus }) {
   const tone =
     status === "success"
       ? "text-[--success]"
@@ -155,14 +193,19 @@ function Meta({
   response: RunResult | null;
 }) {
   if (status === "running") {
-    return <span className="text-[--muted]">running...</span>;
+    return <span className="text-[--muted]">running…</span>;
   }
   if (!response) return <span className="text-[--muted]">idle</span>;
-  const exit =
-    response.exitCode !== null ? `exit ${response.exitCode}` : "no exit";
+
+  const left = response.timeout
+    ? "timeout"
+    : response.exitCode !== null
+      ? `exit ${response.exitCode}`
+      : "no exit";
+
   return (
     <span className="text-[--muted]">
-      {exit} · {formatMs(response.durationMs)}
+      {left} · {formatMs(response.durationMs)}
     </span>
   );
 }
@@ -182,9 +225,4 @@ function Spinner() {
       className="inline-block h-3 w-3 animate-spin rounded-full border border-slate-700 border-t-slate-100"
     />
   );
-}
-
-function formatMs(ms: number) {
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
 }

@@ -149,7 +149,7 @@ function execute(sourcePath: string): Promise<RunResult> {
       finish({
         success: false,
         output: stdout,
-        error: appendLine(stderr, `[executor] ${err.message}`),
+        error: stderr || `Failed to launch Python: ${err.message}`,
         timeout: false,
         durationMs: Date.now() - startedAt,
         exitCode: null,
@@ -160,13 +160,13 @@ function execute(sourcePath: string): Promise<RunResult> {
       const durationMs = Date.now() - startedAt;
 
       if (timedOut) {
+        // The `timeout: true` flag is the canonical signal for callers;
+        // we leave `error` as whatever Python actually emitted (usually
+        // empty) rather than injecting an executor-side marker.
         finish({
           success: false,
           output: stdout,
-          error: appendLine(
-            stderr,
-            `[executor] Process killed after ${EXECUTION_TIMEOUT_MS} ms timeout.`,
-          ),
+          error: stderr,
           timeout: true,
           durationMs,
           exitCode: code,
@@ -184,9 +184,4 @@ function execute(sourcePath: string): Promise<RunResult> {
       });
     });
   });
-}
-
-function appendLine(existing: string, line: string): string {
-  if (!existing) return line;
-  return existing.endsWith("\n") ? existing + line : existing + "\n" + line;
 }
