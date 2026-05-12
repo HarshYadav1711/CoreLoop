@@ -1,0 +1,16 @@
+.git
+.gitignore
+node_modules
+.next
+out
+build
+coverage
+npm-debug.log*
+.DS_Store
+.env*
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+README.md
+Dockerfile
+.dockerignore
