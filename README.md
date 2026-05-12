@@ -4,7 +4,12 @@ Write Python in the browser. Run it on a real server. Get the output back.
 
 CoreLoop is a single-page web app built around one tight feedback loop: edit, run, inspect. The editor is Monaco. The runtime is CPython, invoked from a dedicated Express execution API with a hard wall-clock cap and bounded output capture. Nothing is mocked; every Run is a real subprocess on the server.
 
-> Live demo: _to be added once deployed_
+## Live demo
+
+- App: https://core-loop.vercel.app
+- API: https://coreloop-w36g.onrender.com
+
+The backend may take a few seconds to wake up on the first request because it is hosted on Render's free tier.
 
 ## Status
 
