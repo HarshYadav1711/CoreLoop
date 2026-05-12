@@ -144,7 +144,7 @@ Create a Render Web Service pointed at `/backend`. Use the included backend Dock
 
 - Runtime: Docker
 - Dockerfile path: `backend/Dockerfile` if the repo root is selected, or `Dockerfile` if `/backend` is selected as the root directory.
-- Health check path: `/`
+- Health check path: `/healthz` (or `/`; both return `{ ok: true, service: "coreloop-backend" }`)
 - Environment variables:
   - `CORS_ORIGIN=<your Vercel frontend URL>`
   - `PYTHON_BIN=python3` (optional; this is already the default on Linux)

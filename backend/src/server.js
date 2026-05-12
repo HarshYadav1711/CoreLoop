@@ -27,9 +27,12 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "1mb" }));
 
-app.get("/", (_req, res) => {
+function health(_req, res) {
   res.json({ ok: true, service: "coreloop-backend" });
-});
+}
+
+app.get("/", health);
+app.get("/healthz", health);
 
 app.post("/api/run", async (req, res) => {
   const { code } = req.body ?? {};
@@ -65,11 +68,31 @@ app.use((err, _req, res, _next) => {
     return;
   }
 
-  res.status(500).json(failure(`Internal server failure: ${err.message}`));
+  console.error("[coreloop] unhandled request error:", err);
+  res.status(500).json(failure("Internal server error."));
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`CoreLoop backend listening on http://localhost:${port}`);
+});
+
+function shutdown(signal) {
+  console.log(`[coreloop] received ${signal}, shutting down`);
+  server.close(() => process.exit(0));
+  // Hard exit if connections do not drain within 10 seconds.
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+process.on("uncaughtException", (err) => {
+  console.error("[coreloop] uncaughtException:", err);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[coreloop] unhandledRejection:", reason);
+  process.exit(1);
 });
 
 function parseAllowedOrigins(value) {
