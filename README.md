@@ -146,8 +146,9 @@ Create a Render Web Service pointed at `/backend`. Use the included backend Dock
 - Dockerfile path: `backend/Dockerfile` if the repo root is selected, or `Dockerfile` if `/backend` is selected as the root directory.
 - Health check path: `/healthz` (or `/`; both return `{ ok: true, service: "coreloop-backend" }`)
 - Environment variables:
-  - `CORS_ORIGIN=<your Vercel frontend URL>`
   - `PYTHON_BIN=python3` (optional; this is already the default on Linux)
+
+CORS allow-list is set in `backend/src/server.js` (`https://core-loop.vercel.app` and `http://localhost:3000`). Edit that list if you deploy under a different Vercel domain.
 
 Do not set `CORELOOP_EXECUTOR=docker` on Render. The backend container already includes Python; launching Docker from inside the Render container would require Docker-in-Docker and is intentionally not part of this deployment path.
 

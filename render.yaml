@@ -12,6 +12,3 @@ services:
     buildFilter:
       paths:
         - backend/**
-    envVars:
-      - key: CORS_ORIGIN
-        sync: false
