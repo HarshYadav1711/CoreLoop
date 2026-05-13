@@ -113,24 +113,33 @@ SIGKILL fires at the 2-second mark. The server stays available for the next requ
 
 ## Security considerations
 
-CoreLoop is not a public sandbox. Treat any deployment as a trust-required surface until the mitigations below are in place.
+CoreLoop is a scoped execution prototype. It is built to prove the edit-run-inspect loop end to end, not to be a public sandbox. The protections in the current implementation are narrow and focused on the runtime contract.
 
-Live risks in the current implementation:
+What the runtime already enforces:
 
-1. **No process isolation.** Submitted code runs as the server process user with read access to whatever Node can read and unrestricted outbound network access. A user can read source on disk, hit internal services, or call cloud-metadata endpoints.
-2. **Bounded time, unbounded everything else.** The 2-second timer caps wall clock. It does not cap memory, file descriptors, threads, or child processes. Allocations like `" " * 10**10` can OOM the host before the timer fires.
-3. **Standard library is fully available.** `python -I -B` skips site-packages and ignores user env vars, but `socket`, `subprocess`, `os`, and `ctypes` are all importable.
-4. **No authentication or rate limiting.** Anyone who can reach the page can submit jobs. A trivial fetch loop saturates the host.
+- A hard 2-second wall-clock cap on every run. When it expires, the Python process is killed with `SIGKILL`, so the timer is the upper bound on host time spent per request.
+- A unique temp directory per request, removed in `finally` whether the run succeeded, crashed, or timed out. Nothing about one run carries over into the next.
+- `spawn` with `shell: false` and `python -I -B`. User code is never composed into a shell command, third-party packages and `PYTHON*` env vars are skipped, and `.pyc` writes are disabled.
+- Output capped at 256 KB per stream and code payload capped at 100 KB, both bounded before any process is launched.
 
-The optional Docker executor (`CORELOOP_EXECUTOR=docker`) removes network access, uses a read-only root filesystem, limits memory/CPU/PIDs, and runs code as an unprivileged user. It is enough for local exploration; not enough for public exposure.
+Honest limits to be aware of:
 
-To make CoreLoop safe to expose to the open internet, the execution path needs:
+1. **The host runs user-submitted code.** Arbitrary Python is executed by design. The protections above bound time, output, payload, and working directory, but the process shares the OS namespace of the API and can reach what the API user can reach.
+2. **Resource limits are partial.** Wall-clock time is bounded; memory, file descriptors, threads, and child processes are not. A program can allocate aggressively (`" " * 10**10`) and OOM the host before the timer fires.
+3. **The standard library is unrestricted.** `-I` skips third-party packages and `PYTHON*` env vars, but `socket`, `subprocess`, `os`, and `ctypes` remain importable.
+4. **No application-level auth or rate limiting.** Anyone who can reach the API can submit a job.
 
-- An OS-level sandbox per request: gVisor, nsjail, or a Firecracker microVM. Docker alone is not sufficient.
-- Default-deny network egress with a tight allowlist, enforced at the sandbox boundary, not in user code.
-- Cgroup-enforced limits on memory, file descriptors, and PIDs.
+The optional Docker executor (`CORELOOP_EXECUTOR=docker`) tightens local execution: each run gets a disposable container with no network, a read-only root filesystem, dropped capabilities, and CPU, memory, and PID limits. It is enough for local exploration and demos; it is not a substitute for an OS-level sandbox in production.
+
+Path to opening this to untrusted users:
+
+- Per-request OS-level sandbox (gVisor, nsjail, or a Firecracker microVM). Container boundaries alone are not the right primitive.
+- Default-deny network egress with a tight allowlist, enforced at the sandbox boundary rather than in user code.
+- Cgroup-enforced caps on memory, file descriptors, and PIDs, to match the existing time cap.
 - Per-IP and per-session rate limiting at the edge, returning `429` with `Retry-After`.
-- Authenticated access if the audience is not fully trusted.
+- Authentication if the audience is not fully trusted.
+
+The request and response contract is designed to survive these changes unchanged.
 
 ## Production scaling considerations
 
